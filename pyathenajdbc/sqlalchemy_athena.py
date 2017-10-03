@@ -50,6 +50,7 @@ _TYPE_MAPPINGS = {
     'BIGINT': BIGINT,
     'DATE': DATE,
     'TIMESTAMP': TIMESTAMP,
+    'STRING': STRINGTYPE
 }
 
 
@@ -121,30 +122,40 @@ class AthenaDialect(DefaultDialect):
         # information_schema.columns fails when filtering with table_schema or table_name,
         # if specifying a name that does not exist in table_schema or table_name.
         schema = schema if schema else connection.connection.schema_name
-        query = """
-                SELECT
-                  table_schema,
-                  table_name,
-                  column_name,
-                  data_type,
-                  is_nullable,
-                  column_default,
-                  ordinal_position,
-                  comment
-                FROM information_schema.columns
-                """
-        return [
-            {
-                'name': row.column_name,
-                'type': _TYPE_MAPPINGS.get(re.sub(r'^([A-Z]+)($|\(.+\)$)', r'\1',
-                                                  row.data_type.upper()), NULLTYPE),
-                'nullable': True if row.is_nullable == 'YES' else False,
-                'default': row.column_default,
-                'ordinal_position': row.ordinal_position,
-                'comment': row.comment,
-            } for row in connection.execute(query).fetchall()
-            if row.table_schema == schema and row.table_name == table_name
-        ]
+        query = 'SHOW CREATE TABLE {}.{}'.format(schema, table_name)
+
+        res = connection.execute(query).fetchall()
+        columns = []
+        ordinal = 0
+        for r in res:
+            row = r[0].upper().strip()
+            row_comment = None
+            if row.endswith(',') or row.endswith(')'):
+                row = row[:-1]
+
+            if 'COMMENT' in row:
+                row_split = row.split('COMMENT')
+                row_comment = row_split[-1]
+                row = row_split[0]
+
+            m = re.search(r'\`(.+)\`\s+(.+)\s*', row)
+            if not m:
+                continue
+
+            column_name = m.group(1).lower()
+            print(m.group(2))
+            column_type = _TYPE_MAPPINGS.get(m.group(2), NULLTYPE)
+            ordinal += 1
+            columns.append(dict(
+                name=column_name.lower(),
+                type=column_type,
+                ordinal_position=ordinal,
+                comment=row_comment,
+                nullable=None,
+                default=None))
+
+        return columns
+
 
     def get_foreign_keys(self, connection, table_name, schema=None, **kw):
         # Athena has no support for foreign keys.
